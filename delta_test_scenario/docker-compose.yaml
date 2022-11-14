@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  service-a:
+    build: ../service
+    hostname: service-a
+    environment:
+      PORT: "5000"
+
+  prometheus:
+    image: prom/prometheus:latest
+    hostname: prometheus
+    entrypoint:
+      - "/bin/prometheus"
+      - "--config.file=/opt/prometheus/prometheus.yml"
+      - "--query.lookback-delta=15s"  # <-- testing shorter lookback duration
+    ports:
+      - "55055:9090"
+    volumes:
+      - ./prometheus.yml:/opt/prometheus/prometheus.yml
+
+  promlens:
+    image: prom/promlens:latest
+    entrypoint:
+     - "/bin/promlens"
+     - "--web.default-prometheus-url=http://localhost:55055"
+    ports:
+      - "18080:8080"
