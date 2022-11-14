@@ -1,0 +1,90 @@
+
+Case study: understanding the `delta` function
+
+Goal: explore how we can merge different metrics
+
+Context:
+`kube_pod_container_status_last_terminated_reason{reason="OOMKilled", pod=~".*my-pod-.*"}` returns "no data" when it is 0, and doesn't reset until the pod is restarted. So we wanna "fill in" the empty data with zeroes, then we can detect the spikes using `delta`:
+
+```
+delta((kube_pod_container_status_last_terminated_reason{
+      reason="OOMKilled",
+      pod=~"^my-pod.*"
+    } OR on() vector(0))[1h])
+```
+
+but that query fails with `ranges only allowed for vector selectors`. So we tried replacing `vector(0)` with `kube_pod_info{pod=~"^my-pod.*"}`. But then we're just seeing a flat line at 0, likely because `OR on()` isn't joining the to queries together correctly (mismatched labels).
+
+See original question below for more details.
+
+
+* original question:
+Here's the query from the screenshot:
+```
+kube_pod_container_status_last_terminated_reason{
+      reason="OOMKilled",
+      pod=~"^my-pod.*"
+    } OR on() vector(0)
+```
+
+I want the delta because I want an alert every time it increases, without having to deal with resetting the alert, which requires a restart to remove the OOMKilled status from the pod's LastTerminationState. Link to docs on the kube_pod_container_status_last_terminated_reason metric
+
+So I tried doing this:
+
+```
+delta((kube_pod_container_status_last_terminated_reason{
+      reason="OOMKilled",
+      pod=~"^my-pod.*"
+    } OR on() vector(0))[1h])
+```
+
+but I get the following error: bad_data: 4:24: parse error: ranges only allowed for vector selectors. I think this is due to OR on() vector(0) not including any labels, causing delta to raise a validation error. Any tips on how to figure this out?
+
+* different metrics, same labels:
+Updated `metric_a` and `metric_b` to have the same labels.
+
+```
+delta((metric_a{reason="OOMKilled", one="one"} OR on() metric_b{reason="OOMKilled", one="one"})[30s:10s])
+```
+
+gives us `Error: vector cannot contain metrics with the same labelset`
+
+
+* Try `label_join`
+
+
+we get a nice oscillation here:
+```
+label_join((metric_a{reason="OOMKilled", one="one"} OR on() metric_b{reason="OOMKilled", one="one"}), "metric", "", "__name__")
+```
+
+but it doesn't show any deltas:
+
+```
+delta(label_join((metric_a{reason="OOMKilled", one="one"} OR on() metric_b{reason="OOMKilled", one="one"}), "metric", "", "__name__")[40s:20s])
+```
+gives us the "flat line at 0" effect.
+
+
+* different metrics, same labels except that metric_b has an extra label:
+
+confirms that the labels must match exactly, or else we get the "flat line at 0" effect.
+
+Eg:
+```
+delta((metric_a{reason="OOMKilled", one="one"} OR on() metric_b{reason="OOMKilled", one="one", test="test"})[40s:20s])
+```
+gets nothing but 0's, likely because the data cannot be joined correctly.
+
+* happy path
+
+This gives us the expected results?
+
+```
+delta((metric_a{reason="OOMKilled", one="one"} OR on() metric_a{reason="OOMKilled", one="one"})[40s:20s])
+```
+
+* conclusion
+We can't detect across metrics with different labels - `delta` will read them as a flat 0 line.
+
+If we make the labels exactly the same, we'll get an error (`vector cannot contain metrics with the same labelset`).
